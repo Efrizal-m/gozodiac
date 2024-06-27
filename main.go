@@ -2,21 +2,24 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/gorilla/mux"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type Zodiac struct {
-	StartDate  string
-	EndDate    string
-	ZodiacName string
+// Struct untuk menyimpan data form
+type FormData struct {
+	Name      string
+	BirthDate string
 }
 
-type Result struct {
+// Struct untuk menyimpan hasil
+type ResultData struct {
 	Name      string
 	AgeYears  int
 	AgeMonths int
@@ -24,103 +27,85 @@ type Result struct {
 	Zodiac    string
 }
 
-var db *sql.DB
+// Fungsi untuk menghitung usia
+func calculateAge(birthDate time.Time) (years, months, days int) {
+	today := time.Now()
+	years = today.Year() - birthDate.Year()
+	months = int(today.Month()) - int(birthDate.Month())
+	days = today.Day() - birthDate.Day()
 
-func main() {
-	var err error
-	db, err = sql.Open("sqlite3", "./zodiac.db")
+	if days < 0 {
+		months--
+		days += 30 // simplifikasi
+	}
+	if months < 0 {
+		years--
+		months += 12
+	}
+	return
+}
+
+// Fungsi untuk mendapatkan zodiak
+func getZodiac(db *sql.DB, birthDate time.Time) string {
+	var zodiac string
+	dateStr := birthDate.Format("02-Jan")
+	query := "SELECT ZodiacName FROM TZodiac WHERE (StartDate <= ? AND EndDate >= ?) OR (StartDate > EndDate AND (StartDate <= ? OR EndDate >= ?))"
+	err := db.QueryRow(query, dateStr, dateStr, dateStr, dateStr).Scan(&zodiac)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
-
-	http.HandleFunc("/", formHandler)
-	http.HandleFunc("/submit", submitHandler)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	return zodiac
 }
 
+// Fungsi untuk menampilkan form
 func formHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl := template.Must(template.ParseFiles("form.html"))
 	tmpl.Execute(w, nil)
 }
 
+// Fungsi untuk memproses form
 func submitHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-
-	name := r.FormValue("name")
-	dob := r.FormValue("dob")
-
-	birthdate, err := time.Parse("2006-01-02", dob)
+	db, err := sql.Open("sqlite3", "./zodiac.db")
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer db.Close()
 
-	ageYears, ageMonths, ageDays := calculateAge(birthdate)
-	zodiac := getZodiac(birthdate)
+	if r.Method == http.MethodPost {
+		name := r.FormValue("name")
+		birthDateStr := r.FormValue("birthdate")
+		// Check if birthDateStr is empty
+		if birthDateStr == "" {
+			http.Error(w, "Birthdate cannot be empty", http.StatusBadRequest)
+			return
+		}
 
-	result := Result{
-		Name:      name,
-		AgeYears:  ageYears,
-		AgeMonths: ageMonths,
-		AgeDays:   ageDays,
-		Zodiac:    zodiac,
+		birthDate, err := time.Parse("2006-01-02", birthDateStr)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		years, months, days := calculateAge(birthDate)
+		zodiac := getZodiac(db, birthDate)
+
+		result := ResultData{
+			Name:      name,
+			AgeYears:  years,
+			AgeMonths: months,
+			AgeDays:   days,
+			Zodiac:    zodiac,
+		}
+
+		tmpl := template.Must(template.ParseFiles("result.html"))
+		tmpl.Execute(w, result)
 	}
-
-	tmpl := template.Must(template.ParseFiles("result.html"))
-	tmpl.Execute(w, result)
 }
 
-func calculateAge(birthdate time.Time) (years int, months int, days int) {
-	now := time.Now()
-	years = now.Year() - birthdate.Year()
-	months = int(now.Month() - birthdate.Month())
-	days = now.Day() - birthdate.Day()
+func main() {
+	r := mux.NewRouter()
+	r.HandleFunc("/", formHandler).Methods("GET")
+	r.HandleFunc("/submit", submitHandler).Methods("POST")
 
-	if days < 0 {
-		months--
-		days += 30
-	}
-
-	if months < 0 {
-		years--
-		months += 12
-	}
-
-	return years, months, days
-}
-
-func getZodiac(birthdate time.Time) string {
-	rows, err := db.Query("SELECT StartDate, EndDate, ZodiacName FROM TZodiac")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer rows.Close()
-
-	var startDate, endDate string
-	var zodiacName string
-
-	for rows.Next() {
-		err := rows.Scan(&startDate, &endDate, &zodiacName)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		start, err := time.Parse("02-Jan", startDate)
-		if err != nil {
-			log.Fatal(err)
-		}
-		end, err := time.Parse("02-Jan", endDate)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if (birthdate.Month() == start.Month() && birthdate.Day() >= start.Day()) ||
-			(birthdate.Month() == end.Month() && birthdate.Day() <= end.Day()) {
-			return zodiacName
-		}
-	}
-	return ""
+	fmt.Println("Server running at http://localhost:8080")
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
